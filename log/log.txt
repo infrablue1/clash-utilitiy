@@ -1,0 +1,7 @@
+# default logfiletime="2026-04-25T17:40:07+08:00" level=info msg="Start initial compatible provider 🌐 全球智能"
+time="2026-04-25T17:40:07+08:00" level=info msg="Start initial compatible provider Ghelper"
+time="2026-04-25T17:40:07+08:00" level=info msg="Start initial compatible provider 🇭🇰 香港智能"
+time="2026-04-25T17:40:07+08:00" level=info msg="Start initial compatible provider AI专用"
+time="2026-04-25T17:40:07+08:00" level=info msg="HTTP proxy listening at: [::]:7890"
+time="2026-04-25T17:40:07+08:00" level=info msg="SOCKS proxy listening at: [::]:7891"
+time="2026-04-25T17:40:07+08:00" level=info msg="RESTful API listening at: [::]:9090"

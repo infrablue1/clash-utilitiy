@@ -7,6 +7,7 @@ import subprocess
 import signal
 import argparse
 from ruamel.yaml import YAML
+from datetime import datetime
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -33,6 +34,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="use sudo or admin to start clash-core",
+    )
+    parser.add_argument("--log", default="", help="clash log output file")
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        default=False,
+        help="stop background clash",
     )
 
     args = parser.parse_args()
@@ -95,31 +103,57 @@ def download_file(
     return False
 
 
-def start_clash(clash_core: Path, config_path: Path, log_out, log_err, use_sudo: bool):
+def start_clash(
+    clash_core: Path,
+    config_path: Path,
+    clash_config: Path,
+    log_file: Path,
+    use_sudo: bool,
+):
     cmd = [clash_core, "-d", config_path]
     if use_sudo:
         cmd = ["sudo"] + cmd
     cmd_str = " ".join([str(item) for item in cmd])
     logger.info(f"Running clash-core with '{cmd_str}'")
-    process = subprocess.Popen(
-        [clash_core, "-d", config_path], stdout=log_out, stderr=log_err
-    )
+    logger.info(f"Clash log is in {log_file}")
+    f = open(log_file, "a")
+    process = subprocess.Popen([clash_core, "-d", config_path], stdout=f, stderr=f)
+    logger.info(f"Clash started in background pid: {process.pid}")
 
-    logger.info(f"Clash started, pid: {process.pid}")
+    # Read config file
+    yaml = YAML()
+    config_dict: dict = {}
+    with open(clash_config, "r", encoding="utf-8") as f:
+        config_dict = yaml.load(f)
 
-    def handle_exit(sig, frame):
-        logger.info("stopping clash...")
-        process.terminate()
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        logger.info("clash stopped")
-        sys.exit(0)
+    secret = config_dict.get("secret")
+    port = config_dict.get("port")
+    sock_port = config_dict.get("sock_port")
+    mode = config_dict.get("mode")
+    restful_port = 9090
 
-    signal.signal(signal.SIGINT, handle_exit)
-    signal.signal(signal.SIGTERM, handle_exit)
-    process.wait()
+    logger.info(f"secret is {secret}")
+    logger.info(f"current rule is {mode}")
+    logger.info(f"HTTP proxy listening at: [::]:{port}")
+    logger.info(f"SOCKS proxy listening at: [::]:{sock_port}")
+    logger.info(f"RESTful API listening at: [::]:{restful_port}")
+
+
+def stop_clash(clash_core: Path, use_sudo: bool):
+    process_name = clash_core.name
+    logger.info(f"Stopping clash process:: {process_name}")
+
+    cmd = ["pkill", "-f", process_name]
+    if use_sudo:
+        cmd = ["sudo"] + cmd
+
+    result = subprocess.run(cmd)
+    if result.returncode == 0:
+        logger.info("Clash stopped")
+    elif result.returncode == 1:
+        logger.info("No matching clash process found")
+    else:
+        logger.error(f"pkill failed with return code {result.returncode}")
 
 
 def prepare_clash_config(
@@ -206,6 +240,10 @@ def main():
     config_path = project_path / "config"
     clash_config = config_path / "config.yaml"
 
+    # log
+    log_path = project_path / "log"
+    default_log = log_path / "log.txt"
+
     # clash bin
     clash_core = project_path / "bin" / "clash-linux-amd64"
 
@@ -222,10 +260,15 @@ def main():
         )
 
     # Start clash servie
-    logger.info(f"Starting clash service")
-    log_out = sys.stdout
-    log_err = sys.stderr
-    start_clash(clash_core, config_path, log_out, log_err, args.admin)
+    log_filename = args.log
+    log_file = Path(log_filename) if args.log else default_log
+
+    if args.stop:
+        logger.info(f"Stopping clash service")
+        stop_clash(clash_core, args.admin)
+    else:
+        logger.info(f"Starting clash service")
+        start_clash(clash_core, config_path, clash_config, log_file, args.admin)
 
 
 if __name__ == "__main__":
