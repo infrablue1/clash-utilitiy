@@ -1,13 +1,11 @@
 import os
 import logging
 import sys
-import httpx
 from pathlib import Path
 import subprocess
-import signal
 import argparse
 from ruamel.yaml import YAML
-from datetime import datetime
+import requests
 
 logger: logging.Logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -37,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--log", default="", help="clash log output file")
     parser.add_argument(
+        "--start",
+        action="store_true",
+        default=False,
+        help="start background clash",
+    )
+    parser.add_argument(
         "--stop",
         action="store_true",
         default=False,
@@ -50,57 +54,46 @@ def parse_args() -> argparse.Namespace:
 
     return args
 
-
-#'''
-def check_url(url: str, retries: int, timeout_config: httpx.Timeout) -> bool:
-    limits = httpx.Limits(max_keepalive_connections=1, max_connections=1)
-
+def check_url(url: str, retries: int, timeout: float) -> bool:
     for attempt in range(retries):
         try:
-            with httpx.Client(
+            resp = requests.get(
+                url,
+                allow_redirects=True,
                 verify=False,
-                follow_redirects=True,
-                timeout=timeout_config,
-                limits=limits,
-            ) as client:
-                response = client.get(url)
-                logger.info(f"attempt {attempt + 1}: status={response.status_code}")
-                return 200 <= response.status_code < 400
-        except httpx.TimeoutException as e:
-            logger.warning(f"attempt {attempt + 1} timeout: {e}")
-        except httpx.RequestError as e:
-            logger.warning(f"attempt {attempt + 1} error: {type(e).__name__}: {e}")
-
-    return False
-
-
-def download_file(
-    url: str, dest: Path, retries: int, timeout_config: httpx.Timeout
-) -> bool:
-    for attempt in range(retries):
-        try:
-            with httpx.Client(
-                verify=False,
-                follow_redirects=True,
-                timeout=timeout_config,
-            ) as client:
-                with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with open(dest, "wb") as f:
-                        for chunk in response.iter_bytes(chunk_size=8192):
-                            f.write(chunk)
-                    return True
-
-        except httpx.TimeoutException as e:
-            logger.warning(f"attempt {attempt + 1} timeout: {e}")
-        except httpx.HTTPStatusError as e:
-            logger.warning(
-                f"attempt {attempt + 1} bad status: {e.response.status_code}"
+                timeout=(timeout, timeout),
+                stream=True,
             )
-        except httpx.RequestError as e:
-            logger.warning(f"attempt {attempt + 1} error: {type(e).__name__}: {e}")
-    return False
+            resp.close()
+            if 200 <= resp.status_code < 400:
+                return True
+            return False
+        except requests.exceptions.RequestException:
+            if attempt == retries - 1:
+                return False
+        return False
+
+
+def download_file(url: str, dest: Path, retries: int, timeout: float) -> bool:
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                url, allow_redirects=True, verify=False, timeout=timeout, stream=True
+            )
+            resp.raise_for_status()
+
+            dest.parent.mkdir(exist_ok=True)
+            with open(dest, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return True
+        except requests.exceptions.RequestException as e:
+            if attempt == retries - 1:
+                logger.warning("Failed to donwlond clash config")
+                return False
+
+        return False
 
 
 def start_clash(
@@ -128,7 +121,7 @@ def start_clash(
 
     secret = config_dict.get("secret")
     port = config_dict.get("port")
-    sock_port = config_dict.get("sock_port")
+    sock_port = config_dict.get("socks-port")
     mode = config_dict.get("mode")
     restful_port = 9090
 
@@ -175,14 +168,11 @@ def prepare_clash_config(
         sys.exit(1)
 
     timeout = 10.0
-    timeout_config = httpx.Timeout(
-        connect=timeout, read=timeout, write=timeout, pool=timeout
-    )
     retries = 5
 
     # Checking whether clash url is valid
     logger.info(f"Checking whether clash URL is valid...")
-    url_valid = check_url(clash_url, retries, timeout_config)
+    url_valid = check_url(clash_url, retries, timeout)
     if not url_valid:
         logger.info("CLASH URL is not valid!")
         sys.exit(1)
@@ -190,9 +180,7 @@ def prepare_clash_config(
     # Downloading config.yaml
     logger.info("Downloading clash config file...")
 
-    download_success = download_file(
-        clash_url, template_config, retries, timeout_config
-    )
+    download_success = download_file(clash_url, template_config, retries, timeout)
     if not download_success:
         logging.info("Downloading clash config file failed!")
         sys.exit(1)
@@ -221,7 +209,6 @@ def prepare_clash_config(
         with open(proxies, "r") as f:
             dest.write(f.read())
     logger.info(f"Generate clash config to {clash_config}")
-
 
 def main():
     args = parse_args()
@@ -263,12 +250,17 @@ def main():
     log_filename = args.log
     log_file = Path(log_filename) if args.log else default_log
 
-    if args.stop:
+    # todo: use external controller from config file
+    admin_url = "http://127.0.0.1:9090"
+
+    if args.start:
+        logger.info(f"Starting clash service")
+        start_clash(clash_core, config_path, clash_config, log_file, args.admin)
+    elif args.stop:
         logger.info(f"Stopping clash service")
         stop_clash(clash_core, args.admin)
     else:
-        logger.info(f"Starting clash service")
-        start_clash(clash_core, config_path, clash_config, log_file, args.admin)
+        print("use -h for help")
 
 
 if __name__ == "__main__":
